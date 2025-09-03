@@ -60,7 +60,7 @@ class GPS:
                     "trackingDate": timestamp
                 }
 
-                url = "https://gpsdev.geneat.pro/api/geodetic/upload-location"
+                url = "Nhập API"
                 try:
                     response = requests.post(url, json=gps_data, timeout=5)
                     if response.status_code == 200:
@@ -116,5 +116,6 @@ class GPS:
 
 
 if __name__ == "__main__":
-    gps = GPS("COM3", 115200)   # NMEA thường dùng baudrate 9600
+    gps = GPS("COM3", 115200) 
     gps.run("GPS_9012_Thang", "MY_TRANS_TOKEN")
+
