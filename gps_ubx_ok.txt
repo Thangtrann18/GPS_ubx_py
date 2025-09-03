@@ -1,0 +1,125 @@
+import serial
+import requests
+import datetime
+from pyubx2 import UBXReader
+
+class GPS:
+    deviceId = "GPS_test"
+    transToken = "132456"
+    def __init__(self, port="/dev/ttyUSB0", baudrate=115200):
+        self.hdop = None
+        self.vdop = None
+        self.pdop = None
+        try:
+            self.ser = serial.Serial(port, baudrate, timeout=1)
+            self.ubr = UBXReader(self.ser, protfilter=2)  # chỉ lấy UBX
+            print(f"Opened serial port {port} at {baudrate}")
+        except Exception as e:
+            print(f"Error opening serial port: {e}")
+            self.ser = None
+            self.ubr = None
+
+    def parse_nav_dop(self, parsed_data):
+        """Parse UBX NAV-DOP → hdop, vdop, pdop"""
+        try:
+            self.hdop = parsed_data.hDOP / 100 if parsed_data.hDOP else None
+            self.vdop = parsed_data.vDOP / 100 if parsed_data.vDOP else None
+            self.pdop = parsed_data.pDOP / 100 if parsed_data.pDOP else None
+            print(f"NAV-DOP updated: HDOP={self.hdop}, VDOP={self.vdop}, PDOP={self.pdop}")
+        except Exception as e:
+            print(f"Error parsing NAV-DOP: {e}")
+
+    def parse_nav_pvt(self, parsed_data, deviceId, transToken):
+        """Parse UBX NAV-PVT → gửi dữ liệu lên API"""
+        try:
+            # Tọa độ
+            lat = parsed_data.lat if parsed_data.lat else None
+            lon = parsed_data.lon if parsed_data.lon else None
+            height = parsed_data.height / 1000 if parsed_data.height else None  # mm → m
+
+            # Nếu chưa có DOP từ NAV-DOP → fallback sang hAcc/vAcc
+            hdop = self.hdop if self.hdop else (parsed_data.hAcc / 1000 if parsed_data.hAcc else None)
+            vdop = self.vdop if self.vdop else (parsed_data.vAcc / 1000 if parsed_data.vAcc else None)
+            pdop = self.pdop if self.pdop else ((hdop ** 2 + vdop ** 2) ** 0.5 if (hdop and vdop) else None)
+
+            # Thời gian từ GPS
+            if parsed_data.year > 0:
+                try:
+                    utc_time = datetime.datetime(parsed_data.year, parsed_data.month,
+                                                 parsed_data.day, parsed_data.hour,
+                                                 parsed_data.min, parsed_data.second)
+                except ValueError:
+                    utc_time = datetime.datetime.utcnow()
+            else:
+                utc_time = datetime.datetime.utcnow()
+
+            vietnam_time = utc_time + datetime.timedelta(hours=7)
+            timestamp = vietnam_time.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+            if pdop < 0.03:
+                gps_data = {
+                    "latitude": lat,
+                    "longitude": lon,
+                    "pdop": pdop,
+                    "hdop": hdop,
+                    "vdop": vdop,
+                    "deviceId": deviceId,
+                    "transToken": transToken,
+                    "trackingDate": timestamp
+                }
+
+                # API 1
+                url = "https://gpsdev.geneat.pro/api/geodetic/upload-location"
+            try:
+                response = requests.post(url, json=gps_data, timeout=5)
+                if response.status_code == 200:
+                    print("GPS uploaded successfully (API1)!")
+                else:
+                    print(f"API1 error: {response.status_code} {response.text}")
+            except Exception as e:
+                print(f"API1 request error: {e}")
+
+            # API 2
+        #     params = {"coord": gps_data}
+        #     encoded_url = "https://api-trans.autotimelapse.com/v3/info/location"
+        #     headers = {'Authorization': f'Bearer {transToken}'}
+        #     try:
+        #         response = requests.post(encoded_url, headers=headers, json=params, timeout=5)
+        #         if response.status_code == 200:
+        #             print("GPS uploaded successfully (API2)!")
+        #         else:
+        #             print(f"API2 error: {response.status_code} {response.text}")
+        #     except Exception as e:
+        #         print(f"API2 request error: {e}")
+
+        except Exception as e:
+            print(f"Error parsing NAV-PVT: {e}")
+
+    def run(self, deviceId="TEST_DEVICE", transToken="TEST_TOKEN"):
+        if not self.ubr:
+            return
+        try:
+            while True:
+                try:
+                    raw_data, parsed_data = self.ubr.read()
+                    if not parsed_data:
+                        continue
+
+                    if parsed_data.identity == "NAV-DOP":
+                        self.parse_nav_dop(parsed_data)
+                    elif parsed_data.identity == "NAV-PVT":
+                        self.parse_nav_pvt(parsed_data, deviceId, transToken)
+
+                except KeyboardInterrupt:
+                    print("Stopped by user")
+                    break
+                except Exception as e:
+                    print(f"Error parsing GPS: {e}")
+        finally:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+                print("Serial port closed")
+
+if __name__ == "__main__":
+    gps = GPS("/dev/ttyUSB0", 115200)   # đổi COM port nếu cần
+    gps.run("GPS_9012_Thang", "MY_TRANS_TOKEN")
